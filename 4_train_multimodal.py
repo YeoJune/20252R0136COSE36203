@@ -29,7 +29,7 @@ CONFIG = {
     'batch_size': 64,
     'learning_rate': 0.0005,
     'n_epochs': 10,
-    'game_hidden_dims': [512, 256],
+    'game_hidden_dims': [1024, 512, 256],
     'fusion_hidden_dims': [384, 192],
     'dropout': 0.2,
     'test_size': 0.2,
