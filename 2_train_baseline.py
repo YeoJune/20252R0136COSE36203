@@ -26,7 +26,7 @@ CONFIG = {
     'batch_size': 256,
     'learning_rate': 0.0002,
     'n_epochs': 15,
-    'hidden_dims': [1024, 1024, 1024],
+    'hidden_dims': [2048, 2048],
     'dropout': 0.2,
     'test_size': 0.2,
     'random_seed': 42,
