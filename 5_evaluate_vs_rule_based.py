@@ -221,39 +221,32 @@ class BaselineModelAgent:
     def __init__(self, model_path, device='cuda'):
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         
-        # Load model
+        # Load checkpoint
         checkpoint = torch.load(model_path, map_location=self.device)
-        
-        # Check if PCA was used
-        self.use_pca = 'pca' in checkpoint
-        if self.use_pca:
-            self.pca = checkpoint['pca']
-        else:
-            self.pca = None
-        
-        # Infer model architecture from checkpoint weights
         state_dict = checkpoint['model_state_dict']
         
-        # Get input dimension from first layer
-        first_weight = state_dict['network.0.weight']
-        input_dim = first_weight.shape[1]
+        # Infer model architecture from state_dict
+        # Find all linear layer weights to determine architecture
+        linear_layers = []
+        idx = 0
+        while f'network.{idx}.weight' in state_dict:
+            linear_layers.append(state_dict[f'network.{idx}.weight'])
+            idx += 3  # Skip ReLU and Dropout layers
         
-        # Get hidden dimensions from intermediate layers
-        hidden_dims = []
-        layer_idx = 0
-        while f'network.{layer_idx}.weight' in state_dict:
-            weight = state_dict[f'network.{layer_idx}.weight']
-            hidden_dims.append(weight.shape[0])
-            layer_idx += 3  # Skip ReLU and Dropout
+        # First layer determines input dim
+        input_dim = linear_layers[0].shape[1]
         
-        # Remove output layer dimension
-        hidden_dims = hidden_dims[:-1]
+        # Middle layers determine hidden dims
+        hidden_dims = [layer.shape[0] for layer in linear_layers[:-1]]
         
-        # Get dropout (use default if not in config)
-        model_config = checkpoint.get('config', {})
-        dropout = model_config.get('dropout', 0.2)
+        # Check if PCA was used (input_dim should be 256 with PCA, 377 without)
+        self.use_pca = (input_dim == 256)
         
-        self.model = PokerMLP(input_dim=input_dim, hidden_dims=hidden_dims, dropout=dropout)
+        # Load PCA if it exists in checkpoint
+        self.pca = checkpoint.get('pca', None)
+        
+        # Create model with inferred architecture
+        self.model = PokerMLP(input_dim=input_dim, hidden_dims=hidden_dims, dropout=0.2)
         self.model.load_state_dict(state_dict)
         self.model.to(self.device)
         self.model.eval()
@@ -323,8 +316,7 @@ class BaselineModelAgent:
         
         # Apply PCA if used during training
         if self.use_pca:
-            features = self.pca.transform(features.reshape(1, -1))
-            features = features[0]
+            features = self.pca.transform(features.reshape(1, -1))[0]
         
         # Convert to tensor
         x = torch.FloatTensor(features).unsqueeze(0).to(self.device)
