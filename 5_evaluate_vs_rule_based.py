@@ -13,8 +13,7 @@ from tqdm import tqdm
 import json
 
 from models import PokerMLP, MultimodalPokerModel, TextEncoder
-from dataset import features_to_state
-from generate_text import create_dialogue_prompt
+from generate_text import features_to_state, create_dialogue_prompt
 
 # Action labels
 ACTION_NAMES = ['fold', 'check_call', 'raise_small', 'raise_medium', 'raise_large', 'all_in']
