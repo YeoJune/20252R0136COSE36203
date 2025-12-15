@@ -82,6 +82,7 @@ def index_to_card(idx):
 
 SYSTEM_PROMPT = """You are a poker player. Say what you would say out loud during the game. Keep it short.
 You can bluff, be humorous, or be serious.
+Do not action, Just say something relevant to the game state.
 Only output the dialogue, nothing else."""
 
 def create_dialogue_prompt(state):
