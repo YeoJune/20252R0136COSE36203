@@ -443,8 +443,7 @@ def main():
     
     # Load dialogues
     print("\n3. Loading dialogues...")
-    dialogue_data = load_dialogues(CONFIG['dialogue_file'])
-    dialogues = [d['dialogue'] for d in dialogue_data]
+    dialogues, _ = load_dialogues(CONFIG['dialogue_file'])  # Returns (dialogues, actions)
     print(f"Loaded {len(dialogues)} dialogues")
     
     # Compute text embeddings
