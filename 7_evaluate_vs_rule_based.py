@@ -11,8 +11,9 @@ import argparse
 from pathlib import Path
 from tqdm import tqdm
 import json
+import pickle
 
-from models import PokerMLP, MultimodalPokerModel, TextEncoder
+from models import PokerMLP, MultimodalPokerModel, TextEncoder, SimpleActorCritic, MultimodalActorCritic
 from generate_text import features_to_state, create_dialogue_prompt
 
 # Action labels
@@ -601,6 +602,262 @@ class MultimodalModelAgent:
         return action, dialogue
 
 
+class RLBaselineAgent:
+    """Wrapper for RL baseline Actor-Critic model"""
+    
+    def __init__(self, model_path, device='cuda'):
+        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        
+        # Load checkpoint
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+        state_dict = checkpoint['model_state_dict']
+        
+        # Get config
+        config = checkpoint.get('config', {})
+        hidden_dim = config.get('hidden_dim', 256)
+        
+        # Load PCA
+        pca_path = Path(model_path).parent / 'rl_baseline_pca.pkl'
+        if pca_path.exists():
+            with open(pca_path, 'rb') as f:
+                self.pca = pickle.load(f)
+            print(f"Loaded PCA from {pca_path}")
+        else:
+            raise FileNotFoundError(f"PCA file not found: {pca_path}")
+        
+        # Create model
+        self.model = SimpleActorCritic(input_dim=256, hidden_dim=hidden_dim, n_actions=6)
+        self.model.load_state_dict(state_dict)
+        self.model.to(self.device)
+        self.model.eval()
+        
+        print(f"Loaded RL baseline model from {model_path}")
+        print(f"  Architecture: input=256, hidden={hidden_dim}")
+    
+    def state_to_features(self, game_state):
+        """Convert game state dict to 377-dim feature vector, then apply PCA"""
+        features = []
+        
+        # Same feature extraction as baseline
+        # Hole cards (104 dim)
+        hole_cards_vec = np.zeros(104)
+        for i, card in enumerate(game_state.get('hole_cards', [])[:2]):
+            idx = self._card_to_index(card)
+            if idx >= 0:
+                hole_cards_vec[i * 52 + idx] = 1
+        features.extend(hole_cards_vec)
+        
+        # Board cards (260 dim)
+        board_cards_vec = np.zeros(260)
+        for i, card in enumerate(game_state.get('board_cards', [])[:5]):
+            idx = self._card_to_index(card)
+            if idx >= 0:
+                board_cards_vec[i * 52 + idx] = 1
+        features.extend(board_cards_vec)
+        
+        # Position (6 dim)
+        position_vec = np.zeros(6)
+        pos = game_state.get('position', 0)
+        if 0 <= pos < 6:
+            position_vec[pos] = 1
+        features.extend(position_vec)
+        
+        # Street (4 dim)
+        street_map = {'preflop': 0, 'flop': 1, 'turn': 2, 'river': 3}
+        street_vec = np.zeros(4)
+        street = game_state.get('street', 'preflop')
+        if street in street_map:
+            street_vec[street_map[street]] = 1
+        features.extend(street_vec)
+        
+        # Numeric features (3 dim)
+        pot_norm = game_state.get('pot', 100) / 10000.0
+        stack_norm = game_state.get('stack', 1000) / 10000.0
+        bet_norm = game_state.get('bet_to_call', 0) / 10000.0
+        features.extend([pot_norm, stack_norm, bet_norm])
+        
+        # Apply PCA
+        features = np.array(features, dtype=np.float32)
+        features = self.pca.transform(features.reshape(1, -1))[0]
+        
+        return features
+    
+    def _card_to_index(self, card):
+        """Convert card string to index (0-51)"""
+        if len(card) != 2:
+            return -1
+        rank_map = {'2': 0, '3': 1, '4': 2, '5': 3, '6': 4, '7': 5, '8': 6, 
+                    '9': 7, 'T': 8, 'J': 9, 'Q': 10, 'K': 11, 'A': 12}
+        suit_map = {'c': 0, 'd': 1, 'h': 2, 's': 3}
+        
+        if card[0] in rank_map and card[1] in suit_map:
+            return rank_map[card[0]] * 4 + suit_map[card[1]]
+        return -1
+    
+    def get_action(self, game_state):
+        """Predict action using RL policy"""
+        features = self.state_to_features(game_state)
+        x = torch.FloatTensor(features).unsqueeze(0).to(self.device)
+        
+        with torch.no_grad():
+            action, _, _ = self.model.get_action(x, deterministic=True)
+        
+        return action.item()
+
+
+class RLMultimodalAgent:
+    """Wrapper for RL multimodal Actor-Critic model with dialogue"""
+    
+    def __init__(self, model_path, device='cuda'):
+        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        
+        # Load checkpoint
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+        state_dict = checkpoint['model_state_dict']
+        
+        # Get config
+        config = checkpoint.get('config', {})
+        hidden_dim = config.get('hidden_dim', 128)
+        fusion_dim = config.get('fusion_dim', 256)
+        text_model_name = config.get('text_model', 'distilbert-base-uncased')
+        
+        # Load PCAs
+        model_dir = Path(model_path).parent
+        pca_game_path = model_dir / 'rl_multimodal_game_pca.pkl'
+        pca_text_path = model_dir / 'rl_multimodal_text_pca.pkl'
+        
+        if not pca_game_path.exists() or not pca_text_path.exists():
+            raise FileNotFoundError("PCA files not found for RL multimodal model")
+        
+        with open(pca_game_path, 'rb') as f:
+            self.pca_game = pickle.load(f)
+        with open(pca_text_path, 'rb') as f:
+            self.pca_text = pickle.load(f)
+        
+        print(f"Loaded PCAs from {model_dir}")
+        
+        # Create model
+        self.model = MultimodalActorCritic(
+            game_input_dim=256,
+            text_input_dim=256,
+            hidden_dim=hidden_dim,
+            fusion_dim=fusion_dim,
+            n_actions=6
+        )
+        self.model.load_state_dict(state_dict)
+        self.model.to(self.device)
+        self.model.eval()
+        
+        # Load text encoder for dialogue processing
+        from transformers import AutoTokenizer, AutoModel
+        self.tokenizer = AutoTokenizer.from_pretrained(text_model_name)
+        self.text_encoder = AutoModel.from_pretrained(text_model_name).to(self.device)
+        self.text_encoder.eval()
+        
+        print(f"Loaded RL multimodal model from {model_path}")
+        print(f"  Architecture: game[256] + text[256] -> {fusion_dim}")
+    
+    def state_to_features(self, game_state):
+        """Convert game state to features (same as RL baseline)"""
+        features = []
+        
+        # Hole cards (104 dim)
+        hole_cards_vec = np.zeros(104)
+        for i, card in enumerate(game_state.get('hole_cards', [])[:2]):
+            idx = self._card_to_index(card)
+            if idx >= 0:
+                hole_cards_vec[i * 52 + idx] = 1
+        features.extend(hole_cards_vec)
+        
+        # Board cards (260 dim)
+        board_cards_vec = np.zeros(260)
+        for i, card in enumerate(game_state.get('board_cards', [])[:5]):
+            idx = self._card_to_index(card)
+            if idx >= 0:
+                board_cards_vec[i * 52 + idx] = 1
+        features.extend(board_cards_vec)
+        
+        # Position (6 dim)
+        position_vec = np.zeros(6)
+        pos = game_state.get('position', 0)
+        if 0 <= pos < 6:
+            position_vec[pos] = 1
+        features.extend(position_vec)
+        
+        # Street (4 dim)
+        street_map = {'preflop': 0, 'flop': 1, 'turn': 2, 'river': 3}
+        street_vec = np.zeros(4)
+        street = game_state.get('street', 'preflop')
+        if street in street_map:
+            street_vec[street_map[street]] = 1
+        features.extend(street_vec)
+        
+        # Numeric features (3 dim)
+        pot_norm = game_state.get('pot', 100) / 10000.0
+        stack_norm = game_state.get('stack', 1000) / 10000.0
+        bet_norm = game_state.get('bet_to_call', 0) / 10000.0
+        features.extend([pot_norm, stack_norm, bet_norm])
+        
+        # Apply PCA
+        features = np.array(features, dtype=np.float32)
+        features = self.pca_game.transform(features.reshape(1, -1))[0]
+        
+        return features
+    
+    def _card_to_index(self, card):
+        """Convert card string to index"""
+        if len(card) != 2:
+            return -1
+        rank_map = {'2': 0, '3': 1, '4': 2, '5': 3, '6': 4, '7': 5, '8': 6, 
+                    '9': 7, 'T': 8, 'J': 9, 'Q': 10, 'K': 11, 'A': 12}
+        suit_map = {'c': 0, 'd': 1, 'h': 2, 's': 3}
+        
+        if card[0] in rank_map and card[1] in suit_map:
+            return rank_map[card[0]] * 4 + suit_map[card[1]]
+        return -1
+    
+    def generate_dialogue_embedding(self, game_state):
+        """Generate dialogue and compute embedding"""
+        # Generate simple rule-based dialogue
+        street = game_state.get('street', 'preflop')
+        pot = game_state.get('pot', 100)
+        bet = game_state.get('bet_to_call', 0)
+        
+        dialogue = f"Street: {street}. Pot: ${pot}. Bet to call: ${bet}."
+        
+        # Encode dialogue
+        with torch.no_grad():
+            encoded = self.tokenizer(
+                dialogue,
+                padding=True,
+                truncation=True,
+                max_length=128,
+                return_tensors='pt'
+            )
+            encoded = {k: v.to(self.device) for k, v in encoded.items()}
+            
+            outputs = self.text_encoder(**encoded)
+            text_embedding = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+        
+        # Apply PCA
+        text_embedding = self.pca_text.transform(text_embedding)[0]
+        
+        return text_embedding, dialogue
+    
+    def get_action(self, game_state):
+        """Predict action using RL multimodal policy"""
+        game_features = self.state_to_features(game_state)
+        text_embedding, dialogue = self.generate_dialogue_embedding(game_state)
+        
+        game_tensor = torch.FloatTensor(game_features).unsqueeze(0).to(self.device)
+        text_tensor = torch.FloatTensor(text_embedding).unsqueeze(0).to(self.device)
+        
+        with torch.no_grad():
+            action, _, _ = self.model.get_action(game_tensor, text_tensor, deterministic=True)
+        
+        return action.item(), dialogue
+
+
 # ============================================================================
 # Evaluation
 # ============================================================================
@@ -684,7 +941,8 @@ def evaluate_vs_rule_based(agent, opponent, n_games=1000, verbose=False):
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate models against rule-based agent')
-    parser.add_argument('--model_type', type=str, required=True, choices=['baseline', 'multimodal'],
+    parser.add_argument('--model_type', type=str, required=True, 
+                      choices=['baseline', 'multimodal', 'rl_baseline', 'rl_multimodal'],
                       help='Model type to evaluate')
     parser.add_argument('--model_path', type=str, required=True,
                       help='Path to model checkpoint')
@@ -706,8 +964,12 @@ def main():
     print(f"Loading {args.model_type} model...")
     if args.model_type == 'baseline':
         agent = BaselineModelAgent(args.model_path, device=args.device)
-    else:
+    elif args.model_type == 'multimodal':
         agent = MultimodalModelAgent(args.model_path, device=args.device)
+    elif args.model_type == 'rl_baseline':
+        agent = RLBaselineAgent(args.model_path, device=args.device)
+    elif args.model_type == 'rl_multimodal':
+        agent = RLMultimodalAgent(args.model_path, device=args.device)
     
     # Initialize opponent
     opponent = RuleBasedAgent(aggression_level=0.5, seed=42)

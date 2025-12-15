@@ -228,3 +228,225 @@ def load_checkpoint(model, optimizer, path, device='cuda'):
     print(f"✓ Loaded checkpoint from {path}")
     print(f"  Epoch: {epoch}, Loss: {loss:.4f}")
     return epoch, loss
+
+
+# ============================================================================
+# Reinforcement Learning Models (PPO)
+# ============================================================================
+
+class SimpleActorCritic(nn.Module):
+    """
+    Simple Actor-Critic network for PPO (baseline - game state only)
+    Intentionally kept simple to prevent overfitting
+    
+    Architecture:
+        Input (256) -> Hidden -> Actor head (6) + Critic head (1)
+    """
+    
+    def __init__(self, input_dim=256, hidden_dim=256, n_actions=6, dropout=0.1):
+        """
+        Args:
+            input_dim: Input feature dimension
+            hidden_dim: Hidden layer dimension
+            n_actions: Number of actions (default 6)
+            dropout: Dropout probability
+        """
+        super(SimpleActorCritic, self).__init__()
+        
+        # Shared feature extraction
+        self.shared = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Actor head (policy)
+        self.actor = nn.Linear(hidden_dim, n_actions)
+        
+        # Critic head (value function)
+        self.critic = nn.Linear(hidden_dim, 1)
+    
+    def forward(self, x):
+        """
+        Args:
+            x: Tensor of shape (batch_size, input_dim)
+            
+        Returns:
+            action_logits: Tensor of shape (batch_size, n_actions)
+            value: Tensor of shape (batch_size, 1)
+        """
+        features = self.shared(x)
+        action_logits = self.actor(features)
+        value = self.critic(features)
+        return action_logits, value
+    
+    def get_action(self, x, deterministic=False):
+        """
+        Sample action from policy
+        
+        Args:
+            x: Tensor of shape (batch_size, input_dim)
+            deterministic: If True, return argmax action
+            
+        Returns:
+            action: Tensor of shape (batch_size,)
+            log_prob: Tensor of shape (batch_size,)
+            value: Tensor of shape (batch_size,)
+        """
+        action_logits, value = self.forward(x)
+        
+        if deterministic:
+            action = torch.argmax(action_logits, dim=1)
+            log_prob = torch.log_softmax(action_logits, dim=1).gather(1, action.unsqueeze(1)).squeeze(1)
+        else:
+            # Sample from categorical distribution
+            probs = torch.softmax(action_logits, dim=1)
+            dist = torch.distributions.Categorical(probs)
+            action = dist.sample()
+            log_prob = dist.log_prob(action)
+        
+        return action, log_prob, value.squeeze(1)
+    
+    def evaluate_actions(self, x, actions):
+        """
+        Evaluate given actions
+        
+        Args:
+            x: Tensor of shape (batch_size, input_dim)
+            actions: Tensor of shape (batch_size,)
+            
+        Returns:
+            log_probs: Tensor of shape (batch_size,)
+            values: Tensor of shape (batch_size,)
+            entropy: Tensor of shape (batch_size,)
+        """
+        action_logits, values = self.forward(x)
+        
+        probs = torch.softmax(action_logits, dim=1)
+        dist = torch.distributions.Categorical(probs)
+        
+        log_probs = dist.log_prob(actions)
+        entropy = dist.entropy()
+        
+        return log_probs, values.squeeze(1), entropy
+
+
+class MultimodalActorCritic(nn.Module):
+    """
+    Multimodal Actor-Critic network for PPO (game state + text)
+    
+    Architecture:
+        Game State (256) -> Encoder -> [128]
+                                            -> Concat -> [384] -> Actor + Critic
+        Text (256) -> Encoder -> [128]
+    """
+    
+    def __init__(
+        self, 
+        game_input_dim=256,
+        text_input_dim=256, 
+        hidden_dim=128,
+        fusion_dim=256,
+        n_actions=6, 
+        dropout=0.1
+    ):
+        """
+        Args:
+            game_input_dim: Game state feature dimension
+            text_input_dim: Text embedding dimension
+            hidden_dim: Hidden dimension for each encoder
+            fusion_dim: Fusion layer dimension
+            n_actions: Number of actions
+            dropout: Dropout probability
+        """
+        super(MultimodalActorCritic, self).__init__()
+        
+        # Game state encoder
+        self.game_encoder = nn.Sequential(
+            nn.Linear(game_input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Text encoder
+        self.text_encoder = nn.Sequential(
+            nn.Linear(text_input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Fusion layer
+        fusion_input_dim = hidden_dim * 2
+        self.fusion = nn.Sequential(
+            nn.Linear(fusion_input_dim, fusion_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Actor head (policy)
+        self.actor = nn.Linear(fusion_dim, n_actions)
+        
+        # Critic head (value function)
+        self.critic = nn.Linear(fusion_dim, 1)
+    
+    def forward(self, game_features, text_embeddings):
+        """
+        Args:
+            game_features: Tensor of shape (batch_size, game_input_dim)
+            text_embeddings: Tensor of shape (batch_size, text_input_dim)
+            
+        Returns:
+            action_logits: Tensor of shape (batch_size, n_actions)
+            value: Tensor of shape (batch_size, 1)
+        """
+        game_encoded = self.game_encoder(game_features)
+        text_encoded = self.text_encoder(text_embeddings)
+        
+        fused = torch.cat([game_encoded, text_encoded], dim=1)
+        features = self.fusion(fused)
+        
+        action_logits = self.actor(features)
+        value = self.critic(features)
+        
+        return action_logits, value
+    
+    def get_action(self, game_features, text_embeddings, deterministic=False):
+        """
+        Sample action from policy
+        
+        Returns:
+            action: Tensor of shape (batch_size,)
+            log_prob: Tensor of shape (batch_size,)
+            value: Tensor of shape (batch_size,)
+        """
+        action_logits, value = self.forward(game_features, text_embeddings)
+        
+        if deterministic:
+            action = torch.argmax(action_logits, dim=1)
+            log_prob = torch.log_softmax(action_logits, dim=1).gather(1, action.unsqueeze(1)).squeeze(1)
+        else:
+            probs = torch.softmax(action_logits, dim=1)
+            dist = torch.distributions.Categorical(probs)
+            action = dist.sample()
+            log_prob = dist.log_prob(action)
+        
+        return action, log_prob, value.squeeze(1)
+    
+    def evaluate_actions(self, game_features, text_embeddings, actions):
+        """
+        Evaluate given actions
+        
+        Returns:
+            log_probs: Tensor of shape (batch_size,)
+            values: Tensor of shape (batch_size,)
+            entropy: Tensor of shape (batch_size,)
+        """
+        action_logits, values = self.forward(game_features, text_embeddings)
+        
+        probs = torch.softmax(action_logits, dim=1)
+        dist = torch.distributions.Categorical(probs)
+        
+        log_probs = dist.log_prob(actions)
+        entropy = dist.entropy()
+        
+        return log_probs, values.squeeze(1), entropy
