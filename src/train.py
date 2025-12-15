@@ -194,7 +194,9 @@ def train_model(
     device='cuda',
     checkpoint_dir='checkpoints',
     model_name='poker_model',
-    multimodal=False
+    multimodal=False,
+    config=None,
+    pca=None
 ):
     """
     Full training loop with evaluation and checkpointing
@@ -284,6 +286,13 @@ def train_model(
             'train_acc': train_acc,
             'test_acc': test_acc,
         }
+        
+        # Add config and pca if provided
+        if config is not None:
+            checkpoint['config'] = config
+        if pca is not None:
+            checkpoint['pca'] = pca
+        
         torch.save(checkpoint, checkpoint_path)
         
         # Save best model

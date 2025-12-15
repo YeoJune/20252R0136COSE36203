@@ -111,6 +111,15 @@ def main():
     
     # Train
     print("\n6. Training model...")
+    
+    # Prepare config for checkpoint
+    model_config = {
+        'input_dim': 256,
+        'hidden_dims': CONFIG['hidden_dims'],
+        'output_dim': 6,
+        'dropout': CONFIG['dropout']
+    }
+    
     history = train_model(
         model,
         train_loader,
@@ -121,7 +130,9 @@ def main():
         device=device,
         checkpoint_dir=CONFIG['checkpoint_dir'],
         model_name='baseline',
-        multimodal=False
+        multimodal=False,
+        config=model_config,
+        pca=pca
     )
     
     # Plot training history

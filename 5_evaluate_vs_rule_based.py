@@ -239,14 +239,16 @@ class BaselineModelAgent:
         # Middle layers determine hidden dims
         hidden_dims = [layer.shape[0] for layer in linear_layers[:-1]]
         
-        # Check if PCA was used (input_dim should be 256 with PCA, 377 without)
-        self.use_pca = (input_dim == 256)
+        # Get config from checkpoint
+        model_config = checkpoint.get('config', {})
+        dropout = model_config.get('dropout', 0.2)
         
         # Load PCA if it exists in checkpoint
         self.pca = checkpoint.get('pca', None)
+        self.use_pca = (self.pca is not None)
         
         # Create model with inferred architecture
-        self.model = PokerMLP(input_dim=input_dim, hidden_dims=hidden_dims, dropout=0.2)
+        self.model = PokerMLP(input_dim=input_dim, hidden_dims=hidden_dims, dropout=dropout)
         self.model.load_state_dict(state_dict)
         self.model.to(self.device)
         self.model.eval()
