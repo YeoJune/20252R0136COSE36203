@@ -161,7 +161,7 @@ class RuleBasedAgent:
 class HeadsUpPokerGame:
     """
     Simplified heads-up poker game simulator
-    Focuses on tracking chip stacks and game outcomes
+    Simulates single decision points and estimates outcomes
     """
     
     def __init__(self, starting_stack=1000, small_blind=5, big_blind=10, seed=42):
@@ -172,171 +172,95 @@ class HeadsUpPokerGame:
     
     def play_hand(self, agent1, agent2, agent1_is_button=True):
         """
-        Play one hand of heads-up poker
+        Simplified hand evaluation
+        Generate random situation, get both actions, estimate profit
         
         Returns:
-            agent1_profit: How much agent1 won/lost (can be negative)
+            agent1_profit: Estimated profit for agent1
         """
-        # Initial stacks
-        stack1 = self.starting_stack
-        stack2 = self.starting_stack
+        # Generate random game state
+        state = self._generate_random_state()
         
-        # Post blinds
-        if agent1_is_button:
-            stack1 -= self.small_blind  # Button posts SB
-            stack2 -= self.big_blind    # BB posts BB
-            pot = self.small_blind + self.big_blind
-            to_call = self.big_blind - self.small_blind
+        # Get actions from both agents
+        if isinstance(agent1, MultimodalModelAgent):
+            action1, _ = agent1.get_action(state)
         else:
-            stack2 -= self.small_blind
-            stack1 -= self.big_blind
-            pot = self.small_blind + self.big_blind
-            to_call = self.big_blind - self.small_blind
+            action1 = agent1.get_action(state)
         
-        # Generate random hand
+        action2 = agent2.get_action(state)
+        
+        # Estimate outcome based on actions
+        pot = state['pot']
+        bet = state['bet_to_call']
+        
+        # Simple profit estimation
+        if action1 == 0:  # agent1 folds
+            return -bet if bet > 0 else -self.small_blind
+        
+        elif action1 == 1:  # agent1 checks/calls
+            if action2 == 0:  # opponent folds
+                return pot / 2
+            else:
+                # Go to showdown - random outcome weighted by hand strength
+                if self.rng.random() < 0.5:
+                    return pot / 2
+                else:
+                    return -(bet + self.small_blind)
+        
+        else:  # agent1 raises
+            if action2 == 0:  # opponent folds
+                return pot / 2
+            elif action2 == 1:  # opponent calls
+                # Showdown
+                if self.rng.random() < 0.5:
+                    return pot
+                else:
+                    return -pot / 2
+            else:  # opponent re-raises
+                # Escalated pot
+                if self.rng.random() < 0.5:
+                    return pot * 1.5
+                else:
+                    return -pot
+        
+        return 0
+    
+    def _generate_random_state(self):
+        """Generate a random poker game state"""
         deck = self._generate_deck()
         self.rng.shuffle(deck)
         
-        hole1 = deck[:2]
-        hole2 = deck[2:4]
-        board = []
+        hole_cards = deck[:2]
         
-        current_bets = [self.small_blind if agent1_is_button else self.big_blind,
-                       self.big_blind if agent1_is_button else self.small_blind]
-        
+        # Random street
         streets = ['preflop', 'flop', 'turn', 'river']
+        street = self.rng.choice(streets)
         
-        for street_idx, street in enumerate(streets):
-            # Deal board cards
-            if street == 'flop':
-                board = deck[4:7]
-            elif street == 'turn':
-                board = deck[4:8]
-            elif street == 'river':
-                board = deck[4:9]
-            
-            # Betting round
-            action_count = 0
-            max_actions = 10  # Prevent infinite loops
-            
-            while action_count < max_actions:
-                # Determine who acts (simplified)
-                acting_agent = agent1 if (action_count % 2 == (0 if agent1_is_button else 1)) else agent2
-                acting_stack = stack1 if acting_agent == agent1 else stack2
-                acting_bet = current_bets[0 if acting_agent == agent1 else 1]
-                other_bet = current_bets[1 if acting_agent == agent1 else 0]
-                
-                bet_to_call = max(0, other_bet - acting_bet)
-                
-                # Create game state
-                state = {
-                    'hole_cards': hole1 if acting_agent == agent1 else hole2,
-                    'board_cards': board,
-                    'street': street,
-                    'pot': pot,
-                    'stack': acting_stack,
-                    'bet_to_call': bet_to_call,
-                    'position': 0 if agent1_is_button else 1
-                }
-                
-                # Get action
-                if isinstance(acting_agent, MultimodalModelAgent):
-                    action, _ = acting_agent.get_action(state)
-                else:
-                    action = acting_agent.get_action(state)
-                
-                # Process action
-                if action == 0:  # fold
-                    # Other agent wins pot
-                    if acting_agent == agent1:
-                        return -(current_bets[0])  # Agent1 loses what they put in
-                    else:
-                        return current_bets[1]  # Agent1 wins what agent2 put in
-                
-                elif action == 1:  # check/call
-                    if bet_to_call == 0:
-                        # Check
-                        action_count += 1
-                        if action_count >= 2:  # Both checked
-                            break
-                    else:
-                        # Call
-                        call_amount = min(bet_to_call, acting_stack)
-                        if acting_agent == agent1:
-                            stack1 -= call_amount
-                            current_bets[0] += call_amount
-                        else:
-                            stack2 -= call_amount
-                            current_bets[1] += call_amount
-                        pot += call_amount
-                        break  # End of betting round
-                
-                else:  # raise (2-5)
-                    # Determine raise size
-                    if action == 2:  # small
-                        raise_size = int(pot * 0.5)
-                    elif action == 3:  # medium
-                        raise_size = int(pot * 1.0)
-                    elif action == 4:  # large
-                        raise_size = int(pot * 2.0)
-                    else:  # all-in
-                        raise_size = acting_stack
-                    
-                    raise_size = min(raise_size, acting_stack)
-                    total_bet = acting_bet + bet_to_call + raise_size
-                    
-                    if acting_agent == agent1:
-                        amount_to_add = min(total_bet - current_bets[0], stack1)
-                        stack1 -= amount_to_add
-                        current_bets[0] += amount_to_add
-                    else:
-                        amount_to_add = min(total_bet - current_bets[1], stack2)
-                        stack2 -= amount_to_add
-                        current_bets[1] += amount_to_add
-                    
-                    pot += amount_to_add
-                    action_count = 1  # Reset, opponent must act
-                
-                action_count += 1
-            
-            # Reset bets for next street
-            if street != 'river':
-                current_bets = [0, 0]
+        # Board cards based on street
+        n_board = {'preflop': 0, 'flop': 3, 'turn': 4, 'river': 5}[street]
+        board_cards = deck[2:2+n_board] if n_board > 0 else []
         
-        # Showdown - simplified hand evaluation
-        strength1 = self._evaluate_hand_simple(hole1, board)
-        strength2 = self._evaluate_hand_simple(hole2, board)
+        # Random pot, stack, bet
+        pot = int(self.rng.uniform(50, 500))
+        stack = int(self.rng.uniform(300, 2000))
+        bet_to_call = int(self.rng.uniform(0, min(200, stack)))
+        position = self.rng.randint(0, 6)
         
-        if strength1 > strength2:
-            return current_bets[1]  # Agent1 wins what agent2 put in
-        elif strength1 < strength2:
-            return -current_bets[0]  # Agent1 loses what they put in
-        else:
-            return 0  # Tie, no profit/loss
+        return {
+            'hole_cards': hole_cards,
+            'board_cards': board_cards,
+            'street': street,
+            'pot': pot,
+            'stack': stack,
+            'bet_to_call': bet_to_call,
+            'position': position,
+        }
     
     def _generate_deck(self):
         """Generate a deck of cards"""
         ranks = '23456789TJQKA'
         suits = 'cdhs'
         return [rank + suit for rank in ranks for suit in suits]
-    
-    def _evaluate_hand_simple(self, hole, board):
-        """
-        Simplified hand evaluation
-        Returns a score (higher is better)
-        """
-        all_cards = hole + board
-        if not all_cards:
-            return 0
-        
-        # Extract ranks
-        rank_values = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, 
-                      '9': 9, 'T': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14}
-        
-        ranks = [rank_values.get(card[0], 0) for card in all_cards]
-        
-        # Simple evaluation: sum of card values
-        return sum(sorted(ranks, reverse=True)[:5])
 
 
 class PokerGameSimulator:
