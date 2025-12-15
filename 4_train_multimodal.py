@@ -27,9 +27,9 @@ from generate_text import load_dialogues
 # Configuration
 CONFIG = {
     'batch_size': 64,
-    'learning_rate': 0.0005,
-    'n_epochs': 10,
-    'game_hidden_dims': [1024, 512, 256],
+    'learning_rate': 0.0001,
+    'n_epochs': 15,
+    'game_hidden_dims': [1024, 1024, 1024],
     'fusion_hidden_dims': [384, 192],
     'dropout': 0.2,
     'test_size': 0.2,

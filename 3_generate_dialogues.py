@@ -20,7 +20,7 @@ CONFIG = {
     'model_name': 'mistralai/Mistral-7B-Instruct-v0.2',
     'max_tokens': 50,
     'temperature': 0.7,
-    'batch_size': 8,
+    'batch_size': 256,
     'output_file': 'data/text/dialogues.jsonl',
     'use_vllm': False,
     'use_transformers': True,

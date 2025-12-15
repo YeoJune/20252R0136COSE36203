@@ -24,9 +24,9 @@ from evaluate import (
 # Configuration
 CONFIG = {
     'batch_size': 64,
-    'learning_rate': 0.0005,
-    'n_epochs': 10,
-    'hidden_dims': [1024, 512, 256],
+    'learning_rate': 0.0001,
+    'n_epochs': 15,
+    'hidden_dims': [1024, 1024, 1024],
     'dropout': 0.2,
     'test_size': 0.2,
     'random_seed': 42,
