@@ -158,11 +158,189 @@ class RuleBasedAgent:
 # Game Simulator
 # ============================================================================
 
+class HeadsUpPokerGame:
+    """
+    Simplified heads-up poker game simulator
+    Focuses on tracking chip stacks and game outcomes
+    """
+    
+    def __init__(self, starting_stack=1000, small_blind=5, big_blind=10, seed=42):
+        self.starting_stack = starting_stack
+        self.small_blind = small_blind
+        self.big_blind = big_blind
+        self.rng = np.random.RandomState(seed)
+    
+    def play_hand(self, agent1, agent2, agent1_is_button=True):
+        """
+        Play one hand of heads-up poker
+        
+        Returns:
+            agent1_profit: How much agent1 won/lost (can be negative)
+        """
+        # Initial stacks
+        stack1 = self.starting_stack
+        stack2 = self.starting_stack
+        
+        # Post blinds
+        if agent1_is_button:
+            stack1 -= self.small_blind  # Button posts SB
+            stack2 -= self.big_blind    # BB posts BB
+            pot = self.small_blind + self.big_blind
+            to_call = self.big_blind - self.small_blind
+        else:
+            stack2 -= self.small_blind
+            stack1 -= self.big_blind
+            pot = self.small_blind + self.big_blind
+            to_call = self.big_blind - self.small_blind
+        
+        # Generate random hand
+        deck = self._generate_deck()
+        self.rng.shuffle(deck)
+        
+        hole1 = deck[:2]
+        hole2 = deck[2:4]
+        board = []
+        
+        current_bets = [self.small_blind if agent1_is_button else self.big_blind,
+                       self.big_blind if agent1_is_button else self.small_blind]
+        
+        streets = ['preflop', 'flop', 'turn', 'river']
+        
+        for street_idx, street in enumerate(streets):
+            # Deal board cards
+            if street == 'flop':
+                board = deck[4:7]
+            elif street == 'turn':
+                board = deck[4:8]
+            elif street == 'river':
+                board = deck[4:9]
+            
+            # Betting round
+            action_count = 0
+            max_actions = 10  # Prevent infinite loops
+            
+            while action_count < max_actions:
+                # Determine who acts (simplified)
+                acting_agent = agent1 if (action_count % 2 == (0 if agent1_is_button else 1)) else agent2
+                acting_stack = stack1 if acting_agent == agent1 else stack2
+                acting_bet = current_bets[0 if acting_agent == agent1 else 1]
+                other_bet = current_bets[1 if acting_agent == agent1 else 0]
+                
+                bet_to_call = max(0, other_bet - acting_bet)
+                
+                # Create game state
+                state = {
+                    'hole_cards': hole1 if acting_agent == agent1 else hole2,
+                    'board_cards': board,
+                    'street': street,
+                    'pot': pot,
+                    'stack': acting_stack,
+                    'bet_to_call': bet_to_call,
+                    'position': 0 if agent1_is_button else 1
+                }
+                
+                # Get action
+                if isinstance(acting_agent, MultimodalModelAgent):
+                    action, _ = acting_agent.get_action(state)
+                else:
+                    action = acting_agent.get_action(state)
+                
+                # Process action
+                if action == 0:  # fold
+                    # Other agent wins pot
+                    if acting_agent == agent1:
+                        return -(current_bets[0])  # Agent1 loses what they put in
+                    else:
+                        return current_bets[1]  # Agent1 wins what agent2 put in
+                
+                elif action == 1:  # check/call
+                    if bet_to_call == 0:
+                        # Check
+                        action_count += 1
+                        if action_count >= 2:  # Both checked
+                            break
+                    else:
+                        # Call
+                        call_amount = min(bet_to_call, acting_stack)
+                        if acting_agent == agent1:
+                            stack1 -= call_amount
+                            current_bets[0] += call_amount
+                        else:
+                            stack2 -= call_amount
+                            current_bets[1] += call_amount
+                        pot += call_amount
+                        break  # End of betting round
+                
+                else:  # raise (2-5)
+                    # Determine raise size
+                    if action == 2:  # small
+                        raise_size = int(pot * 0.5)
+                    elif action == 3:  # medium
+                        raise_size = int(pot * 1.0)
+                    elif action == 4:  # large
+                        raise_size = int(pot * 2.0)
+                    else:  # all-in
+                        raise_size = acting_stack
+                    
+                    raise_size = min(raise_size, acting_stack)
+                    total_bet = acting_bet + bet_to_call + raise_size
+                    
+                    if acting_agent == agent1:
+                        amount_to_add = min(total_bet - current_bets[0], stack1)
+                        stack1 -= amount_to_add
+                        current_bets[0] += amount_to_add
+                    else:
+                        amount_to_add = min(total_bet - current_bets[1], stack2)
+                        stack2 -= amount_to_add
+                        current_bets[1] += amount_to_add
+                    
+                    pot += amount_to_add
+                    action_count = 1  # Reset, opponent must act
+                
+                action_count += 1
+            
+            # Reset bets for next street
+            if street != 'river':
+                current_bets = [0, 0]
+        
+        # Showdown - simplified hand evaluation
+        strength1 = self._evaluate_hand_simple(hole1, board)
+        strength2 = self._evaluate_hand_simple(hole2, board)
+        
+        if strength1 > strength2:
+            return current_bets[1]  # Agent1 wins what agent2 put in
+        elif strength1 < strength2:
+            return -current_bets[0]  # Agent1 loses what they put in
+        else:
+            return 0  # Tie, no profit/loss
+    
+    def _generate_deck(self):
+        """Generate a deck of cards"""
+        ranks = '23456789TJQKA'
+        suits = 'cdhs'
+        return [rank + suit for rank in ranks for suit in suits]
+    
+    def _evaluate_hand_simple(self, hole, board):
+        """
+        Simplified hand evaluation
+        Returns a score (higher is better)
+        """
+        all_cards = hole + board
+        if not all_cards:
+            return 0
+        
+        # Extract ranks
+        rank_values = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, 
+                      '9': 9, 'T': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14}
+        
+        ranks = [rank_values.get(card[0], 0) for card in all_cards]
+        
+        # Simple evaluation: sum of card values
+        return sum(sorted(ranks, reverse=True)[:5])
+
+
 class PokerGameSimulator:
-    """
-    Simulate simplified heads-up poker games
-    Focus on decision-making evaluation, not full game logic
-    """
+    """Wrapper for game simulation - deprecated, use HeadsUpPokerGame"""
     
     def __init__(self, starting_stack=1000, small_blind=5, big_blind=10, seed=42):
         self.starting_stack = starting_stack
@@ -505,94 +683,77 @@ class MultimodalModelAgent:
 
 def evaluate_vs_rule_based(agent, opponent, n_games=1000, verbose=False):
     """
-    Evaluate agent against rule-based opponent
+    Evaluate agent against rule-based opponent by playing actual poker hands
     
     Args:
         agent: Model agent (BaselineModelAgent or MultimodalModelAgent)
         opponent: RuleBasedAgent
-        n_games: Number of games to simulate
+        n_games: Number of hands to play
         verbose: Whether to print detailed logs
         
     Returns:
-        results: Dict with evaluation metrics
+        results: Dict with evaluation metrics including profit/loss
     """
-    simulator = PokerGameSimulator()
+    game = HeadsUpPokerGame()
     
-    agent_actions = []
-    opponent_actions = []
-    agreements = []
+    total_profit = 0
+    wins = 0
+    losses = 0
+    ties = 0
     
-    dialogues = [] if isinstance(agent, MultimodalModelAgent) else None
+    hand_profits = []
     
-    print(f"\nEvaluating against rule-based agent ({n_games} games)...")
+    print(f"\nPlaying {n_games} hands against rule-based agent...")
     
     for i in tqdm(range(n_games)):
-        # Generate random game state
-        state = simulator.generate_random_game_state()
+        # Alternate button position
+        agent1_is_button = (i % 2 == 0)
         
-        # Get actions
-        if isinstance(agent, MultimodalModelAgent):
-            agent_action, dialogue = agent.get_action(state)
-            if dialogues is not None:
-                dialogues.append(dialogue)
+        # Play one hand
+        profit = game.play_hand(agent, opponent, agent1_is_button=agent1_is_button)
+        
+        total_profit += profit
+        hand_profits.append(profit)
+        
+        if profit > 0:
+            wins += 1
+        elif profit < 0:
+            losses += 1
         else:
-            agent_action = agent.get_action(state)
-        
-        opponent_action = opponent.get_action(state)
-        
-        agent_actions.append(agent_action)
-        opponent_actions.append(opponent_action)
-        agreements.append(1 if agent_action == opponent_action else 0)
+            ties += 1
         
         if verbose and i < 5:
-            print(f"\nGame {i+1}:")
-            print(f"  State: {state['street']}, Pot: ${state['pot']}, Bet: ${state['bet_to_call']}")
-            print(f"  Cards: {state['hole_cards']} | {state['board_cards']}")
-            if dialogues and len(dialogues) > 0:
-                print(f"  Dialogue: \"{dialogue}\"")
-            print(f"  Agent: {ACTION_NAMES[agent_action]}")
-            print(f"  Opponent: {ACTION_NAMES[opponent_action]}")
-            print(f"  Agreement: {agreements[-1]}")
+            print(f"\nHand {i+1}:")
+            print(f"  Result: ${profit:+.2f}")
+            print(f"  Running total: ${total_profit:+.2f}")
     
     # Compute metrics
-    agent_actions = np.array(agent_actions)
-    opponent_actions = np.array(opponent_actions)
-    
-    agreement_rate = np.mean(agreements) * 100
-    
-    # Action distribution
-    agent_dist = np.bincount(agent_actions, minlength=6) / len(agent_actions)
-    opponent_dist = np.bincount(opponent_actions, minlength=6) / len(opponent_actions)
+    win_rate = (wins / n_games) * 100
+    avg_profit_per_hand = total_profit / n_games
     
     results = {
         'n_games': n_games,
-        'agreement_rate': agreement_rate,
-        'agent_action_distribution': agent_dist.tolist(),
-        'opponent_action_distribution': opponent_dist.tolist(),
-        'agent_actions': agent_actions.tolist(),
-        'opponent_actions': opponent_actions.tolist(),
+        'total_profit': float(total_profit),
+        'avg_profit_per_hand': float(avg_profit_per_hand),
+        'win_rate': float(win_rate),
+        'wins': wins,
+        'losses': losses,
+        'ties': ties,
+        'hand_profits': hand_profits,
     }
-    
-    if dialogues:
-        results['sample_dialogues'] = dialogues[:10]
     
     # Print summary
     print("\n" + "="*60)
     print("EVALUATION RESULTS")
     print("="*60)
-    print(f"Games played: {n_games}")
-    print(f"Agreement rate: {agreement_rate:.2f}%")
-    print(f"\nAgent action distribution:")
-    for i, (name, prob) in enumerate(zip(ACTION_NAMES, agent_dist)):
-        print(f"  {name:15s}: {prob*100:5.2f}%")
-    print(f"\nOpponent action distribution:")
-    for i, (name, prob) in enumerate(zip(ACTION_NAMES, opponent_dist)):
-        print(f"  {name:15s}: {prob*100:5.2f}%")
-    
-    if dialogues:
-        print(f"\nSample dialogues:")
-        for i, d in enumerate(dialogues[:5], 1):
-            print(f"  {i}. \"{d}\"")
+    print(f"Hands played: {n_games}")
+    print(f"\nProfit/Loss:")
+    print(f"  Total: ${total_profit:+.2f}")
+    print(f"  Per hand: ${avg_profit_per_hand:+.4f}")
+    print(f"\nWin Rate: {win_rate:.2f}%")
+    print(f"  Wins: {wins}")
+    print(f"  Losses: {losses}")
+    print(f"  Ties: {ties}")
     
     return results
 
